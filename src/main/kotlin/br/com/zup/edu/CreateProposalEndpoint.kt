@@ -1,12 +1,7 @@
 package br.com.zup.edu
 
-import com.google.protobuf.Any
+import br.com.zup.edu.shared.grpc.ErrorHandler
 import com.google.protobuf.Timestamp
-import com.google.rpc.BadRequest
-import com.google.rpc.Code
-import com.google.rpc.StatusProto
-import io.grpc.Status
-import io.grpc.StatusRuntimeException
 import io.grpc.stub.StreamObserver
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
@@ -14,10 +9,10 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import javax.inject.Singleton
 import javax.transaction.Transactional
-import javax.validation.ConstraintViolationException
 
+@ErrorHandler
 @Singleton
-open class CreateProposalEndpoint(val repository: ProposalRepository) :
+open class CreateProposalEndpoint(private val repository: ProposalRepository) :
     PropostaGrpcServiceGrpc.PropostaGrpcServiceImplBase() {
 
     private val LOGGER = LoggerFactory.getLogger(CreateProposalEndpoint::class.java)
@@ -25,22 +20,13 @@ open class CreateProposalEndpoint(val repository: ProposalRepository) :
     @Transactional
     open override fun create(request: CreateProposalRequest, responseObserver: StreamObserver<CreateProposalResponse>) {
 
-        if (repository.existsByDocument(request.document)) {
-            responseObserver.onError(
-                Status.ALREADY_EXISTS.withDescription("Document already exists").asRuntimeException()
-            )
-        }
-
         LOGGER.info("new request: $request")
 
-
-        val proposal = try {
-            repository.save(request.toModel())
-        } catch (e: ConstraintViolationException) {
-            LOGGER.error("Invalid error: ${e.message}")
-            responseObserver.onError(handleConstraintVaiolationException(e))
-            return
+        if (repository.existsByDocument(request.document)) {
+            throw ProposalAlreadyExistsException("Proposal already exists")
         }
+
+        val proposal = repository.save(request.toModel())
 
         val response = CreateProposalResponse.newBuilder()
             .setId(proposal.id.toString())
@@ -48,28 +34,6 @@ open class CreateProposalEndpoint(val repository: ProposalRepository) :
 
         responseObserver.onNext(response)
         responseObserver.onCompleted()
-    }
-
-    private fun handleConstraintVaiolationException(e: ConstraintViolationException): StatusRuntimeException {
-        val violations = e.constraintViolations.map {
-            BadRequest.FieldViolation.newBuilder()
-                .setField(it.propertyPath.last().name)
-                .setDescription(it.message)
-                .build()
-        }
-
-        val details = BadRequest.newBuilder()
-            .addAllFieldViolations(violations).build()
-
-        val statusProto = com.google.rpc.Status.newBuilder()
-            .setCode(Code.INVALID_ARGUMENT_VALUE)
-            .setMessage("Invalid parameters")
-            .addDetails(Any.pack(details))
-            .build()
-
-        LOGGER.info("Status proto: $statusProto")
-        val error = io.grpc.protobuf.StatusProto.toStatusRuntimeException(statusProto)
-        return error
     }
 }
 
